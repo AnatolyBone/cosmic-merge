@@ -2118,11 +2118,19 @@
         });
 
         document.addEventListener('touchmove', (e) => {
-            e.preventDefault();
+            if (!gameState.isPlaying || gameState.isPaused) return;
+
             const canvas = document.getElementById('gameCanvas');
-            if (!canvas) return;
+            if (!canvas || !e.touches?.length) return;
+
             const rect = canvas.getBoundingClientRect();
-            gameState.mouseX = e.touches[0].clientX - rect.left;
+            const touch = e.touches[0];
+            const insideCanvas = touch.clientY > rect.top && touch.clientY < rect.bottom && touch.clientX > rect.left && touch.clientX < rect.right;
+
+            if (!insideCanvas) return;
+
+            e.preventDefault();
+            gameState.mouseX = touch.clientX - rect.left;
         }, { passive: false });
 
         document.addEventListener('click', (e) => {
