@@ -313,6 +313,9 @@
             align-items: flex-start;
             padding: 15px 20px;
             pointer-events: auto;
+            background: linear-gradient(180deg, rgba(8, 12, 28, 0.75), rgba(8, 12, 28, 0.15));
+            backdrop-filter: blur(6px);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
         }
 
         .score-section {
@@ -339,6 +342,7 @@
 
         .timer-section {
             text-align: center;
+            min-width: 120px;
         }
 
         .timer-label {
@@ -358,6 +362,23 @@
             margin-top: 4px;
             font-size: 0.85rem;
             color: rgba(255, 255, 255, 0.75);
+        }
+
+
+        .combo-indicator {
+            margin-top: 5px;
+            font-family: 'Orbitron', sans-serif;
+            font-size: 0.8rem;
+            color: #f97316;
+            opacity: 0;
+            transform: translateY(6px);
+            transition: all 0.25s ease;
+            text-shadow: 0 0 12px rgba(249, 115, 22, 0.45);
+        }
+
+        .combo-indicator.active {
+            opacity: 1;
+            transform: translateY(0);
         }
 
         .right-controls {
@@ -867,6 +888,7 @@
                     <div class="timer-label">Время</div>
                     <div id="timer">00:00</div>
                     <div class="best-score">Рекорд: <span id="bestScore">0</span></div>
+                    <div class="combo-indicator" id="comboIndicator">🔥 COMBO x1</div>
                 </div>
                 <div class="right-controls">
                     <button class="icon-btn" onclick="togglePause()" title="Пауза">⏸</button>
@@ -1118,6 +1140,9 @@
             gameOverTimeout: null,
             dangerousBodies: new Map(),
             activeDropBodyId: null,
+            gameplayStarted: false,
+            comboCount: 0,
+            lastMergeAt: 0
             gameplayStarted: false
         };
 
@@ -1341,9 +1366,12 @@
             gameState.dangerousBodies.clear();
             gameState.activeDropBodyId = null;
             sessionNewAchievements = [];
+            gameState.comboCount = 0;
+            gameState.lastMergeAt = 0;
             
             updateScore();
             updateBestScore();
+            updateComboUI();
             updateTimer();
             updateNextPlanetPreview();
         }
@@ -1354,6 +1382,10 @@
                 if (!gameState.isPaused && gameState.isPlaying) {
                     gameState.time++;
                     updateTimer();
+                    if (Date.now() - gameState.lastMergeAt > 3500 && gameState.comboCount !== 0) {
+                        gameState.comboCount = 0;
+                        updateComboUI();
+                    }
                     checkAchievements();
                 }
             }, 1000);
@@ -1464,6 +1496,49 @@
             ctx.setLineDash([]);
         }
 
+        function drawPlanetSurfaceDetails(ctx, planetType, planet) {
+            ctx.save();
+
+            if (planetType <= 4) {
+                // Rocky planets: craters.
+                const craterColor = 'rgba(0, 0, 0, 0.18)';
+                for (let i = 0; i < 4; i++) {
+                    const angle = i * 1.7 + planetType * 0.8;
+                    const dist = planet.radius * (0.2 + i * 0.14);
+                    const r = planet.radius * (0.09 + (i % 2) * 0.03);
+                    ctx.beginPath();
+                    ctx.fillStyle = craterColor;
+                    ctx.arc(Math.cos(angle) * dist, Math.sin(angle) * dist, r, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            if (planetType === 5 || planetType === 6 || planetType === 7 || planetType === 9) {
+                // Gas giants / atmospheres: soft stripes.
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+                ctx.lineWidth = Math.max(1.5, planet.radius * 0.06);
+                for (let i = -1; i <= 1; i++) {
+                    ctx.beginPath();
+                    ctx.ellipse(0, i * planet.radius * 0.22, planet.radius * 0.86, planet.radius * 0.18, 0, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // Terminator shadow for more volume.
+            const shadowGrad = ctx.createRadialGradient(
+                planet.radius * 0.15, -planet.radius * 0.1, planet.radius * 0.25,
+                planet.radius * 0.3, 0, planet.radius * 1.05
+            );
+            shadowGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+            shadowGrad.addColorStop(1, 'rgba(0, 0, 0, 0.38)');
+            ctx.beginPath();
+            ctx.arc(0, 0, planet.radius, 0, Math.PI * 2);
+            ctx.fillStyle = shadowGrad;
+            ctx.fill();
+
+            ctx.restore();
+        }
+
         function drawPlanets(ctx) {
             const bodies = Matter.Composite.allBodies(world);
             
@@ -1493,6 +1568,7 @@
                     ctx.arc(0, 0, planet.radius, 0, Math.PI * 2);
                     ctx.fillStyle = gradient;
                     ctx.fill();
+                    drawPlanetSurfaceDetails(ctx, planetType, planet);
                     
                     // Saturn rings
                     if (planetType === 8) {
@@ -1698,13 +1774,19 @@
                         createPlanet(newType, midX, midY);
                         
                         // Update stats
-                        gameState.score += PLANETS[newType].points;
+                        const now = Date.now();
+                        gameState.comboCount = now - gameState.lastMergeAt < 3000 ? gameState.comboCount + 1 : 1;
+                        gameState.lastMergeAt = now;
+
+                        const comboBonus = Math.max(0, gameState.comboCount - 1) * 25;
+                        gameState.score += PLANETS[newType].points + comboBonus;
                         gameState.merges++;
                         if (newType > gameState.maxPlanet) {
                             gameState.maxPlanet = newType;
                         }
                         
                         updateScore();
+                        updateComboUI();
                         checkAchievements();
                         createMergeEffect(midX, midY, PLANETS[newType].color);
                         
@@ -1850,6 +1932,18 @@
             const bestScoreEl = document.getElementById('bestScore');
             if (bestScoreEl) {
                 bestScoreEl.textContent = bestScore.toLocaleString();
+            }
+        }
+
+        function updateComboUI() {
+            const comboEl = document.getElementById('comboIndicator');
+            if (!comboEl) return;
+
+            if (gameState.comboCount > 1) {
+                comboEl.textContent = `🔥 COMBO x${gameState.comboCount}`;
+                comboEl.classList.add('active');
+            } else {
+                comboEl.classList.remove('active');
             }
         }
 
