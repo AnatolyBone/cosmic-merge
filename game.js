@@ -1,0 +1,1214 @@
+// ===== YANDEX GAMES SDK =====
+        let ysdk = null;
+        let sdkInitStarted = false;
+        let player = null;
+        let cloudSyncTimeout = null;
+        const AD_COOLDOWN_MS = 120000;
+        let lastAdAt = 0;
+
+        const storage = {
+            get(key, fallback) {
+                try {
+                    const value = localStorage.getItem(key);
+                    return value ? JSON.parse(value) : fallback;
+                } catch (error) {
+                    console.warn('Storage read failed:', error);
+                    return fallback;
+                }
+            },
+            set(key, value) {
+                try {
+                    localStorage.setItem(key, JSON.stringify(value));
+                    return true;
+                } catch (error) {
+                    console.warn('Storage write failed:', error);
+                    return false;
+                }
+            }
+        };
+
+        function scheduleCloudSync() {
+            if (!player) return;
+
+            if (cloudSyncTimeout) {
+                clearTimeout(cloudSyncTimeout);
+            }
+
+            cloudSyncTimeout = setTimeout(async () => {
+                try {
+                    await player.setData({
+                        cosmicMergeAchievements: unlockedAchievements,
+                        cosmicMergeBestScore: bestScore
+                    });
+                } catch (error) {
+                    console.warn('Cloud save failed:', error);
+                }
+            }, 1500);
+        }
+
+        async function initPlayerData() {
+            if (!ysdk) return;
+
+            try {
+                player = await ysdk.getPlayer();
+                const cloudData = await player.getData(['cosmicMergeAchievements', 'cosmicMergeBestScore']);
+
+                if (Array.isArray(cloudData.cosmicMergeAchievements)) {
+                    const mergedAchievements = new Set([...unlockedAchievements, ...cloudData.cosmicMergeAchievements]);
+                    unlockedAchievements = Array.from(mergedAchievements);
+                    storage.set('cosmicMergeAchievements', unlockedAchievements);
+                    updateAchievementsList();
+                }
+
+                if (typeof cloudData.cosmicMergeBestScore === 'number') {
+                    bestScore = Math.max(bestScore, cloudData.cosmicMergeBestScore);
+                    storage.set('cosmicMergeBestScore', bestScore);
+                    updateBestScore();
+                }
+            } catch (error) {
+                console.warn('Player init skipped:', error);
+            }
+        }
+
+        async function initSDK() {
+            if (sdkInitStarted || ysdk) return;
+            sdkInitStarted = true;
+
+            try {
+                if (typeof YaGames !== 'undefined') {
+                    ysdk = await YaGames.init();
+                    ysdk?.features?.LoadingAPI?.ready?.();
+                    await initPlayerData();
+                    console.log('Yandex SDK initialized');
+                } else {
+                    console.log('Yandex SDK not found (local testing)');
+                }
+            } catch (e) {
+                sdkInitStarted = false;
+                console.error('Yandex SDK init failed', e);
+            }
+        }
+
+        // ===== GAME CONFIGURATION =====
+        const PLANETS = [
+            { name: 'Плутон', radius: 15, color: '#9ca3af', glowColor: '#6b7280', points: 10 },
+            { name: 'Луна', radius: 20, color: '#e5e7eb', glowColor: '#d1d5db', points: 20 },
+            { name: 'Меркурий', radius: 25, color: '#a78b71', glowColor: '#8b7355', points: 40 },
+            { name: 'Марс', radius: 32, color: '#ef6344', glowColor: '#dc2626', points: 80 },
+            { name: 'Венера', radius: 40, color: '#fbbf24', glowColor: '#f59e0b', points: 160 },
+            { name: 'Земля', radius: 45, color: '#22c55e', glowColor: '#16a34a', points: 320 },
+            { name: 'Нептун', radius: 52, color: '#3b82f6', glowColor: '#2563eb', points: 640 },
+            { name: 'Уран', radius: 58, color: '#67e8f9', glowColor: '#22d3ee', points: 1280 },
+            { name: 'Сатурн', radius: 65, color: '#d4a574', glowColor: '#c4956a', points: 2560 },
+            { name: 'Юпитер', radius: 75, color: '#d2b48c', glowColor: '#c4a87c', points: 5120 },
+            { name: 'Солнце', radius: 90, color: '#fef08a', glowColor: '#fde047', points: 10000 }
+        ];
+
+        const DIFFICULTIES = {
+            easy: { dropInterval: 4000, gravity: 0.6, label: 'Лёгкий', class: 'easy' },
+            medium: { dropInterval: 2500, gravity: 0.85, label: 'Средний', class: 'medium' },
+            hard: {
+                dropInterval: 1100,
+                minDropInterval: 550,
+                dropRampEverySec: 30,
+                dropRampStep: 100,
+                gravity: 1.25,
+                label: 'Сложный',
+                class: 'hard'
+            }
+        };
+
+        const ACHIEVEMENTS = [
+            { id: 'first_merge', name: 'Первое слияние', desc: 'Слей две планеты', icon: '🔗', check: (s) => s.merges >= 1 },
+            { id: 'earth_created', name: 'Родная планета', desc: 'Создай Землю', icon: '🌍', check: (s) => s.maxPlanet >= 5 },
+            { id: 'neptune_created', name: 'Ледяной гигант', desc: 'Создай Нептун', icon: '🔵', check: (s) => s.maxPlanet >= 6 },
+            { id: 'saturn_created', name: 'Властелин колец', desc: 'Создай Сатурн', icon: '💍', check: (s) => s.maxPlanet >= 8 },
+            { id: 'jupiter_created', name: 'Газовый гигант', desc: 'Создай Юпитер', icon: '🟤', check: (s) => s.maxPlanet >= 9 },
+            { id: 'sun_created', name: 'Создатель звёзд', desc: 'Создай Солнце!', icon: '☀️', check: (s) => s.maxPlanet >= 10 },
+            { id: 'score_1000', name: 'Тысячник', desc: 'Набери 1000 очков', icon: '🎯', check: (s) => s.score >= 1000 },
+            { id: 'score_5000', name: 'Мастер слияний', desc: 'Набери 5000 очков', icon: '⭐', check: (s) => s.score >= 5000 },
+            { id: 'score_10000', name: 'Космический бог', desc: 'Набери 10000 очков', icon: '👑', check: (s) => s.score >= 10000 },
+            { id: 'survivor_60', name: 'Выживший', desc: 'Продержись 1 минуту', icon: '⏱️', check: (s) => s.time >= 60 },
+            { id: 'survivor_180', name: 'Стойкий', desc: 'Продержись 3 минуты', icon: '🛡️', check: (s) => s.time >= 180 },
+            { id: 'merge_master', name: 'Цепная реакция', desc: 'Сделай 50 слияний за игру', icon: '💥', check: (s) => s.merges >= 50 }
+        ];
+
+        // ===== GAME STATE =====
+        let engine, world, render, runner;
+        let gameState = {
+            score: 0,
+            time: 0,
+            merges: 0,
+            maxPlanet: 0,
+            isPlaying: false,
+            isPaused: false,
+            difficulty: 'medium',
+            currentPlanetType: 0,
+            nextPlanetType: 0,
+            mouseX: 0,
+            canDrop: true,
+            dropTimeout: null,
+            autoDropInterval: null,
+            timerInterval: null,
+            gameOverTimeout: null,
+            dangerousBodies: new Map(),
+            activeDropBodyId: null,
+            gameplayStarted: false,
+            comboCount: 0,
+            lastMergeAt: 0
+        };
+
+        let unlockedAchievements = storage.get('cosmicMergeAchievements', []);
+        let bestScore = storage.get('cosmicMergeBestScore', 0);
+        let sessionNewAchievements = [];
+
+        const containerWidth = Math.min(400, window.innerWidth - 20);
+        const containerHeight = Math.min(600, window.innerHeight - 120);
+        const wallThickness = 20;
+        const dangerLineY = 80;
+
+        // ===== INITIALIZATION =====
+        function init() {
+            createStars();
+            populatePlanetList();
+            updateAchievementsList();
+            updateBestScore();
+        }
+
+        function createStars() {
+            const starsContainer = document.getElementById('stars');
+            starsContainer.innerHTML = '';
+            const starCount = Math.floor((window.innerWidth * window.innerHeight) / 3000);
+            
+            for (let i = 0; i < starCount; i++) {
+                const star = document.createElement('div');
+                star.className = 'star';
+                star.style.left = Math.random() * 100 + '%';
+                star.style.top = Math.random() * 100 + '%';
+                const size = Math.random() * 2.5 + 0.5;
+                star.style.width = size + 'px';
+                star.style.height = size + 'px';
+                star.style.setProperty('--duration', (Math.random() * 3 + 2) + 's');
+                star.style.setProperty('--min-opacity', Math.random() * 0.3 + 0.2);
+                star.style.animationDelay = Math.random() * 5 + 's';
+                starsContainer.appendChild(star);
+            }
+        }
+
+        function populatePlanetList() {
+            const list = document.getElementById('planetList');
+            list.innerHTML = PLANETS.map((p, i) => `
+                <div class="planet-item">
+                    <div class="planet-icon" style="background: radial-gradient(circle at 30% 30%, ${lightenColor(p.color, 30)}, ${p.color}, ${p.glowColor}); box-shadow: 0 0 10px ${p.glowColor};"></div>
+                    <span class="planet-name">${i + 1}. ${p.name}</span>
+                    <span class="planet-points">+${p.points}</span>
+                </div>
+            `).join('');
+        }
+
+        function lightenColor(color, percent) {
+            const num = parseInt(color.replace('#', ''), 16);
+            const amt = Math.round(2.55 * percent);
+            const R = Math.min(255, (num >> 16) + amt);
+            const G = Math.min(255, ((num >> 8) & 0x00FF) + amt);
+            const B = Math.min(255, (num & 0x0000FF) + amt);
+            return `rgb(${R}, ${G}, ${B})`;
+        }
+
+        function syncGameplayTracking(shouldPlay) {
+            if (!ysdk?.features?.GameplayAPI) {
+                return;
+            }
+
+            try {
+                if (shouldPlay && !gameState.gameplayStarted) {
+                    ysdk.features.GameplayAPI.start();
+                    gameState.gameplayStarted = true;
+                }
+                if (!shouldPlay && gameState.gameplayStarted) {
+                    ysdk.features.GameplayAPI.stop();
+                    gameState.gameplayStarted = false;
+                }
+            } catch (error) {
+                console.warn('Gameplay API call failed:', error);
+            }
+        }
+
+        function isInteractiveElement(target) {
+            if (!(target instanceof Element)) {
+                return false;
+            }
+            return Boolean(target.closest('button, .menu-btn, .icon-btn, .difficulty-card, .back-btn, .close-modal'));
+        }
+
+        function maybeInitSDK() {
+            if (window.__sdkScriptLoaded || typeof YaGames !== 'undefined') {
+                initSDK();
+            }
+        }
+
+        function requestGameFullscreen() {
+            if (!document.fullscreenEnabled || document.fullscreenElement) {
+                return;
+            }
+
+            const root = document.documentElement;
+            root.requestFullscreen?.().catch(() => {
+                // Fullscreen can be blocked by browser policies.
+            });
+        }
+
+        // ===== MENU NAVIGATION =====
+        function showMainMenu() {
+            hideAllScreens();
+            document.getElementById('mainMenu').style.display = 'flex';
+        }
+
+        function showDifficultySelect() {
+            hideAllScreens();
+            document.getElementById('difficultySelect').style.display = 'flex';
+        }
+
+        function selectDifficulty(diff) {
+            gameState.difficulty = diff;
+            hideAllScreens();
+            document.getElementById('storyScreen').style.display = 'flex';
+        }
+
+        function hideAllScreens() {
+            document.getElementById('mainMenu').style.display = 'none';
+            document.getElementById('difficultySelect').style.display = 'none';
+            document.getElementById('storyScreen').style.display = 'none';
+            document.getElementById('gameContainer').style.display = 'none';
+            document.getElementById('helpModal').style.display = 'none';
+            document.getElementById('achievementsModal').style.display = 'none';
+            document.getElementById('gameOverModal').style.display = 'none';
+            document.getElementById('pauseOverlay').style.display = 'none';
+        }
+
+        function showHelpFromMenu() {
+            document.getElementById('helpModal').style.display = 'flex';
+        }
+
+        function showAchievementsFromMenu() {
+            updateAchievementsList();
+            document.getElementById('achievementsModal').style.display = 'flex';
+        }
+
+        // ===== GAME START =====
+        function startGame() {
+            hideAllScreens();
+            document.getElementById('gameContainer').style.display = 'block';
+            
+            // Update difficulty indicator
+            const diff = DIFFICULTIES[gameState.difficulty];
+            const indicator = document.getElementById('difficultyIndicator');
+            indicator.textContent = diff.label;
+            indicator.className = 'difficulty-indicator ' + diff.class;
+            
+            initPhysics();
+            resetGameState();
+            startGameLoop();
+            syncGameplayTracking(true);
+            requestGameFullscreen();
+        }
+
+        function initPhysics() {
+            const canvas = document.getElementById('gameCanvas');
+            const canvasWidth = containerWidth + wallThickness * 2;
+            const canvasHeight = containerHeight + 100;
+            
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+            canvas.style.marginTop = '60px';
+            
+            // Clear previous engine
+            if (engine) {
+                Matter.Engine.clear(engine);
+                Matter.Events.off(engine);
+            }
+            if (runner) {
+                Matter.Runner.stop(runner);
+            }
+
+            engine = Matter.Engine.create();
+            world = engine.world;
+            
+            const diff = DIFFICULTIES[gameState.difficulty];
+            engine.world.gravity.y = diff.gravity;
+
+            runner = Matter.Runner.create();
+            Matter.Runner.run(runner, engine);
+
+            // Create walls
+            const wallOptions = { isStatic: true, friction: 0.3, restitution: 0.2, label: 'wall' };
+            
+            // Left wall
+            Matter.Composite.add(world, Matter.Bodies.rectangle(
+                wallThickness / 2, canvasHeight / 2, wallThickness, canvasHeight, wallOptions
+            ));
+            
+            // Right wall
+            Matter.Composite.add(world, Matter.Bodies.rectangle(
+                canvasWidth - wallThickness / 2, canvasHeight / 2, wallThickness, canvasHeight, wallOptions
+            ));
+            
+            // Bottom wall
+            Matter.Composite.add(world, Matter.Bodies.rectangle(
+                canvasWidth / 2, canvasHeight - wallThickness / 2, canvasWidth, wallThickness, wallOptions
+            ));
+
+            // Collision detection
+            Matter.Events.on(engine, 'collisionStart', handleCollision);
+
+            // Start render loop
+            requestAnimationFrame(gameLoop);
+        }
+
+        function resetGameState() {
+            gameState.score = 0;
+            gameState.time = 0;
+            gameState.merges = 0;
+            gameState.maxPlanet = 0;
+            gameState.isPlaying = true;
+            gameState.isPaused = false;
+            gameState.canDrop = true;
+            gameState.currentPlanetType = getRandomStartPlanet();
+            gameState.nextPlanetType = getRandomStartPlanet();
+            gameState.dangerousBodies.clear();
+            gameState.activeDropBodyId = null;
+            sessionNewAchievements = [];
+            gameState.comboCount = 0;
+            gameState.lastMergeAt = 0;
+            
+            updateScore();
+            updateBestScore();
+            updateComboUI();
+            updateTimer();
+            updateNextPlanetPreview();
+        }
+
+        function startGameLoop() {
+            // Timer
+            gameState.timerInterval = setInterval(() => {
+                if (!gameState.isPaused && gameState.isPlaying) {
+                    gameState.time++;
+                    updateTimer();
+                    if (Date.now() - gameState.lastMergeAt > 3500 && gameState.comboCount !== 0) {
+                        gameState.comboCount = 0;
+                        updateComboUI();
+                    }
+                    checkAchievements();
+                }
+            }, 1000);
+
+            // Auto drop
+            scheduleNextDrop();
+        }
+
+        function getCurrentDropInterval() {
+            const diff = DIFFICULTIES[gameState.difficulty];
+
+            if (gameState.difficulty !== 'hard') {
+                return diff.dropInterval;
+            }
+
+            const ramps = Math.floor(gameState.time / diff.dropRampEverySec);
+            const interval = diff.dropInterval - ramps * diff.dropRampStep;
+            return Math.max(diff.minDropInterval, interval);
+        }
+
+        function scheduleNextDrop() {
+            if (gameState.autoDropInterval) {
+                clearTimeout(gameState.autoDropInterval);
+            }
+            
+            const currentDropInterval = getCurrentDropInterval();
+            gameState.autoDropInterval = setTimeout(() => {
+                if (gameState.isPlaying && !gameState.isPaused && gameState.canDrop) {
+                    dropPlanet();
+                }
+                if (gameState.isPlaying) {
+                    scheduleNextDrop();
+                }
+            }, currentDropInterval);
+        }
+
+        function getRandomStartPlanet() {
+            // Only spawn first 5 planets
+            return Math.floor(Math.random() * 5);
+        }
+
+        // ===== GAME LOOP =====
+        function gameLoop() {
+            if (!gameState.isPlaying) return;
+            
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw container
+            drawContainer(ctx, canvas);
+            
+            // Draw danger line
+            drawDangerLine(ctx, canvas);
+            
+            // Draw planets
+            drawPlanets(ctx);
+            updateControlledDrop();
+            
+            // Draw preview
+            if (!gameState.isPaused) {
+                drawPreview(ctx, canvas);
+            }
+            
+            // Check for game over
+            checkGameOver();
+            
+            requestAnimationFrame(gameLoop);
+        }
+
+        function drawContainer(ctx, canvas) {
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 2;
+            ctx.shadowColor = 'rgba(96, 165, 250, 0.5)';
+            ctx.shadowBlur = 15;
+            
+            // Left wall
+            ctx.beginPath();
+            ctx.moveTo(wallThickness, dangerLineY);
+            ctx.lineTo(wallThickness, canvas.height - wallThickness);
+            ctx.stroke();
+            
+            // Right wall
+            ctx.beginPath();
+            ctx.moveTo(canvas.width - wallThickness, dangerLineY);
+            ctx.lineTo(canvas.width - wallThickness, canvas.height - wallThickness);
+            ctx.stroke();
+            
+            // Bottom wall
+            ctx.beginPath();
+            ctx.moveTo(wallThickness, canvas.height - wallThickness);
+            ctx.lineTo(canvas.width - wallThickness, canvas.height - wallThickness);
+            ctx.stroke();
+            
+            ctx.shadowBlur = 0;
+        }
+
+        function drawDangerLine(ctx, canvas) {
+            ctx.strokeStyle = 'rgba(239, 68, 68, 0.5)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([10, 10]);
+            ctx.beginPath();
+            ctx.moveTo(wallThickness, dangerLineY);
+            ctx.lineTo(canvas.width - wallThickness, dangerLineY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        function drawPlanetSurfaceDetails(ctx, planetType, planet) {
+            ctx.save();
+
+            if (planetType <= 4) {
+                // Rocky planets: craters.
+                const craterColor = 'rgba(0, 0, 0, 0.18)';
+                for (let i = 0; i < 4; i++) {
+                    const angle = i * 1.7 + planetType * 0.8;
+                    const dist = planet.radius * (0.2 + i * 0.14);
+                    const r = planet.radius * (0.09 + (i % 2) * 0.03);
+                    ctx.beginPath();
+                    ctx.fillStyle = craterColor;
+                    ctx.arc(Math.cos(angle) * dist, Math.sin(angle) * dist, r, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            if (planetType === 5 || planetType === 6 || planetType === 7 || planetType === 9) {
+                // Gas giants / atmospheres: soft stripes.
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.18)';
+                ctx.lineWidth = Math.max(1.5, planet.radius * 0.06);
+                for (let i = -1; i <= 1; i++) {
+                    ctx.beginPath();
+                    ctx.ellipse(0, i * planet.radius * 0.22, planet.radius * 0.86, planet.radius * 0.18, 0, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+            }
+
+            // Terminator shadow for more volume.
+            const shadowGrad = ctx.createRadialGradient(
+                planet.radius * 0.15, -planet.radius * 0.1, planet.radius * 0.25,
+                planet.radius * 0.3, 0, planet.radius * 1.05
+            );
+            shadowGrad.addColorStop(0, 'rgba(0, 0, 0, 0)');
+            shadowGrad.addColorStop(1, 'rgba(0, 0, 0, 0.38)');
+            ctx.beginPath();
+            ctx.arc(0, 0, planet.radius, 0, Math.PI * 2);
+            ctx.fillStyle = shadowGrad;
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        function drawPlanets(ctx) {
+            const bodies = Matter.Composite.allBodies(world);
+            
+            bodies.forEach(body => {
+                if (body.label && body.label.startsWith('planet_')) {
+                    const planetType = parseInt(body.label.split('_')[1]);
+                    const planet = PLANETS[planetType];
+                    
+                    ctx.save();
+                    ctx.translate(body.position.x, body.position.y);
+                    ctx.rotate(body.angle);
+                    
+                    // Glow effect
+                    ctx.shadowColor = planet.glowColor;
+                    ctx.shadowBlur = 20;
+                    
+                    // Planet gradient
+                    const gradient = ctx.createRadialGradient(
+                        -planet.radius * 0.3, -planet.radius * 0.3, 0,
+                        0, 0, planet.radius
+                    );
+                    gradient.addColorStop(0, lightenColor(planet.color, 40));
+                    gradient.addColorStop(0.5, planet.color);
+                    gradient.addColorStop(1, planet.glowColor);
+                    
+                    ctx.beginPath();
+                    ctx.arc(0, 0, planet.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = gradient;
+                    ctx.fill();
+                    drawPlanetSurfaceDetails(ctx, planetType, planet);
+                    
+                    // Saturn rings
+                    if (planetType === 8) {
+                        ctx.shadowBlur = 0;
+                        ctx.strokeStyle = 'rgba(210, 180, 140, 0.6)';
+                        ctx.lineWidth = 4;
+                        ctx.beginPath();
+                        ctx.ellipse(0, 0, planet.radius * 1.5, planet.radius * 0.3, 0, 0, Math.PI * 2);
+                        ctx.stroke();
+                    }
+                    
+                    // Jupiter stripes
+                    if (planetType === 9) {
+                        ctx.shadowBlur = 0;
+                        ctx.strokeStyle = 'rgba(139, 90, 43, 0.4)';
+                        ctx.lineWidth = 3;
+                        for (let i = -2; i <= 2; i++) {
+                            ctx.beginPath();
+                            ctx.moveTo(-planet.radius * 0.9, i * planet.radius * 0.25);
+                            ctx.lineTo(planet.radius * 0.9, i * planet.radius * 0.25);
+                            ctx.stroke();
+                        }
+                    }
+                    
+                    // Sun corona
+                    if (planetType === 10) {
+                        ctx.shadowColor = '#fef08a';
+                        ctx.shadowBlur = 40;
+                        for (let i = 0; i < 12; i++) {
+                            const angle = (i / 12) * Math.PI * 2;
+                            ctx.beginPath();
+                            ctx.moveTo(
+                                Math.cos(angle) * planet.radius * 0.9,
+                                Math.sin(angle) * planet.radius * 0.9
+                            );
+                            ctx.lineTo(
+                                Math.cos(angle) * planet.radius * 1.3,
+                                Math.sin(angle) * planet.radius * 1.3
+                            );
+                            ctx.strokeStyle = 'rgba(254, 240, 138, 0.6)';
+                            ctx.lineWidth = 5;
+                            ctx.stroke();
+                        }
+                    }
+                    
+                    // Highlight
+                    ctx.shadowBlur = 0;
+                    const highlightGradient = ctx.createRadialGradient(
+                        -planet.radius * 0.4, -planet.radius * 0.4, 0,
+                        -planet.radius * 0.4, -planet.radius * 0.4, planet.radius * 0.5
+                    );
+                    highlightGradient.addColorStop(0, 'rgba(255, 255, 255, 0.4)');
+                    highlightGradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                    ctx.beginPath();
+                    ctx.arc(0, 0, planet.radius, 0, Math.PI * 2);
+                    ctx.fillStyle = highlightGradient;
+                    ctx.fill();
+                    
+                    ctx.restore();
+                }
+            });
+        }
+
+        function drawPreview(ctx, canvas) {
+            if (!gameState.canDrop) return;
+            
+            const planet = PLANETS[gameState.currentPlanetType];
+            const x = Math.max(wallThickness + planet.radius, 
+                      Math.min(canvas.width - wallThickness - planet.radius, gameState.mouseX));
+            const y = 40;
+            
+            // Trajectory line
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(x, y + planet.radius);
+            ctx.lineTo(x, canvas.height - wallThickness);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // Preview planet
+            ctx.globalAlpha = 0.6;
+            ctx.shadowColor = planet.glowColor;
+            ctx.shadowBlur = 15;
+            
+            const gradient = ctx.createRadialGradient(
+                x - planet.radius * 0.3, y - planet.radius * 0.3, 0,
+                x, y, planet.radius
+            );
+            gradient.addColorStop(0, lightenColor(planet.color, 40));
+            gradient.addColorStop(0.5, planet.color);
+            gradient.addColorStop(1, planet.glowColor);
+            
+            ctx.beginPath();
+            ctx.arc(x, y, planet.radius, 0, Math.PI * 2);
+            ctx.fillStyle = gradient;
+            ctx.fill();
+            
+            ctx.globalAlpha = 1;
+            ctx.shadowBlur = 0;
+        }
+
+        function updateControlledDrop() {
+            if (!gameState.activeDropBodyId || gameState.isPaused || !world) return;
+
+            const body = Matter.Composite.allBodies(world).find((b) => b.id === gameState.activeDropBodyId);
+            if (!body || !body.label?.startsWith('planet_')) {
+                gameState.activeDropBodyId = null;
+                return;
+            }
+
+            const planetType = parseInt(body.label.split('_')[1]);
+            const planet = PLANETS[planetType];
+            const canvas = document.getElementById('gameCanvas');
+            if (!canvas) return;
+
+            const minX = wallThickness + planet.radius;
+            const maxX = canvas.width - wallThickness - planet.radius;
+            const targetX = Math.max(minX, Math.min(maxX, gameState.mouseX));
+            const horizontalDelta = targetX - body.position.x;
+
+            Matter.Body.setVelocity(body, {
+                x: horizontalDelta * 0.2,
+                y: body.velocity.y
+            });
+
+            if (Math.abs(horizontalDelta) < 0.6) {
+                Matter.Body.setPosition(body, { x: targetX, y: body.position.y });
+            }
+        }
+
+        // ===== PLANET DROPPING =====
+        function dropPlanet() {
+            if (!gameState.canDrop || gameState.isPaused || !gameState.isPlaying) return;
+            
+            const canvas = document.getElementById('gameCanvas');
+            const planet = PLANETS[gameState.currentPlanetType];
+            const x = Math.max(wallThickness + planet.radius, 
+                      Math.min(canvas.width - wallThickness - planet.radius, gameState.mouseX));
+            
+            const droppedBody = createPlanet(gameState.currentPlanetType, x, 40);
+            gameState.activeDropBodyId = droppedBody.id;
+            
+            gameState.currentPlanetType = gameState.nextPlanetType;
+            gameState.nextPlanetType = getRandomStartPlanet();
+            updateNextPlanetPreview();
+            
+            gameState.canDrop = false;
+            setTimeout(() => {
+                gameState.canDrop = true;
+            }, 800);
+            
+            // Reset auto-drop timer
+            scheduleNextDrop();
+        }
+
+        function createPlanet(type, x, y) {
+            const planet = PLANETS[type];
+            
+            const body = Matter.Bodies.circle(x, y, planet.radius, {
+                label: `planet_${type}`,
+                restitution: 0.2,
+                friction: 0.5,
+                frictionAir: 0.001,
+                density: 0.001 * (type + 1)
+            });
+            
+            Matter.Composite.add(world, body);
+            return body;
+        }
+
+        // ===== COLLISION HANDLING =====
+        function handleCollision(event) {
+            const pairs = event.pairs;
+            
+            for (const pair of pairs) {
+                const bodyA = pair.bodyA;
+                const bodyB = pair.bodyB;
+                
+                if (bodyA.label && bodyB.label && 
+                    bodyA.label.startsWith('planet_') && bodyB.label.startsWith('planet_')) {
+                    
+                    const typeA = parseInt(bodyA.label.split('_')[1]);
+                    const typeB = parseInt(bodyB.label.split('_')[1]);
+                    
+                    if (gameState.activeDropBodyId && (bodyA.id === gameState.activeDropBodyId || bodyB.id === gameState.activeDropBodyId)) {
+                        gameState.activeDropBodyId = null;
+                    }
+
+                    if (typeA === typeB && typeA < PLANETS.length - 1) {
+                        // Merge!
+                        const midX = (bodyA.position.x + bodyB.position.x) / 2;
+                        const midY = (bodyA.position.y + bodyB.position.y) / 2;
+                        
+                        Matter.Composite.remove(world, bodyA);
+                        Matter.Composite.remove(world, bodyB);
+                        
+                        gameState.dangerousBodies.delete(bodyA.id);
+                        gameState.dangerousBodies.delete(bodyB.id);
+                        
+                        const newType = typeA + 1;
+                        createPlanet(newType, midX, midY);
+                        
+                        // Update stats
+                        const now = Date.now();
+                        gameState.comboCount = now - gameState.lastMergeAt < 3000 ? gameState.comboCount + 1 : 1;
+                        gameState.lastMergeAt = now;
+
+                        const comboBonus = Math.max(0, gameState.comboCount - 1) * 25;
+                        gameState.score += PLANETS[newType].points + comboBonus;
+                        gameState.merges++;
+                        if (newType > gameState.maxPlanet) {
+                            gameState.maxPlanet = newType;
+                        }
+                        
+                        updateScore();
+                        updateComboUI();
+                        checkAchievements();
+                        createMergeEffect(midX, midY, PLANETS[newType].color);
+                        
+                        break;
+                    }
+                }
+            }
+        }
+
+        function createMergeEffect(x, y, color) {
+            const canvas = document.getElementById('gameCanvas');
+            const ctx = canvas.getContext('2d');
+            
+            let size = 10;
+            let alpha = 1;
+            
+            function animate() {
+                if (alpha <= 0) return;
+                
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 3;
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 20;
+                ctx.beginPath();
+                ctx.arc(x, y, size, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+                
+                size += 5;
+                alpha -= 0.05;
+                
+                requestAnimationFrame(animate);
+            }
+            
+            animate();
+        }
+
+        // ===== GAME OVER CHECK =====
+        function checkGameOver() {
+            const bodies = Matter.Composite.allBodies(world);
+            const now = Date.now();
+            
+            bodies.forEach(body => {
+                if (body.label && body.label.startsWith('planet_')) {
+                    const planetType = parseInt(body.label.split('_')[1]);
+                    const radius = PLANETS[planetType].radius;
+                    
+                    // Check if above danger line
+                    if (body.position.y - radius < dangerLineY) {
+                        // Check if nearly stationary
+                        const speed = Math.sqrt(body.velocity.x ** 2 + body.velocity.y ** 2);
+                        if (speed < 0.5) {
+                            if (!gameState.dangerousBodies.has(body.id)) {
+                                gameState.dangerousBodies.set(body.id, now);
+                            } else {
+                                const dangerTime = now - gameState.dangerousBodies.get(body.id);
+                                if (dangerTime > 2000) {
+                                    triggerGameOver();
+                                }
+                            }
+                        } else {
+                            gameState.dangerousBodies.delete(body.id);
+                        }
+                    } else {
+                        gameState.dangerousBodies.delete(body.id);
+                    }
+                }
+            });
+        }
+
+        function triggerGameOver() {
+            gameState.isPlaying = false;
+            syncGameplayTracking(false);
+            
+            // Stop timers
+            clearInterval(gameState.timerInterval);
+            clearTimeout(gameState.autoDropInterval);
+            
+            // Final achievement check
+            checkAchievements();
+            
+            // Show ad before game over screen, but with cooldown and minimum session time.
+            const now = Date.now();
+            const shouldShowAd = ysdk && ysdk.adv && gameState.time >= 30 && now - lastAdAt >= AD_COOLDOWN_MS;
+
+            if (shouldShowAd) {
+                ysdk.adv.showFullscreenAdv({
+                    callbacks: {
+                        onClose: function(wasShown) {
+                            if (wasShown) {
+                                lastAdAt = Date.now();
+                            }
+                            showGameOverScreen();
+                        },
+                        onError: function(error) {
+                            console.error('Ad error:', error);
+                            showGameOverScreen();
+                        }
+                    }
+                });
+            } else {
+                showGameOverScreen();
+            }
+        }
+
+        function showGameOverScreen() {
+            // Show game over screen
+            document.getElementById('finalScore').textContent = gameState.score;
+            document.getElementById('finalTime').textContent = formatTime(gameState.time);
+            
+            // Show new achievements
+            const container = document.getElementById('newAchievementsContainer');
+            const list = document.getElementById('newAchievementsList');
+            
+            if (sessionNewAchievements.length > 0) {
+                container.style.display = 'block';
+                list.innerHTML = sessionNewAchievements.map(a => `
+                    <div class="new-achievement-item">
+                        <span>${a.icon}</span>
+                        <span>${a.name}</span>
+                    </div>
+                `).join('');
+            } else {
+                container.style.display = 'none';
+            }
+            
+            document.getElementById('gameOverModal').style.display = 'flex';
+        }
+
+        // ===== UI UPDATES =====
+        function updateScore() {
+            if (gameState.score > bestScore) {
+                bestScore = gameState.score;
+                storage.set('cosmicMergeBestScore', bestScore);
+                scheduleCloudSync();
+            }
+            document.getElementById('score').textContent = gameState.score.toLocaleString();
+        }
+
+        function updateBestScore() {
+            const bestScoreEl = document.getElementById('bestScore');
+            if (bestScoreEl) {
+                bestScoreEl.textContent = bestScore.toLocaleString();
+            }
+        }
+
+        function updateComboUI() {
+            const comboEl = document.getElementById('comboIndicator');
+            if (!comboEl) return;
+
+            if (gameState.comboCount > 1) {
+                comboEl.textContent = `🔥 COMBO x${gameState.comboCount}`;
+                comboEl.classList.add('active');
+            } else {
+                comboEl.classList.remove('active');
+            }
+        }
+
+        function updateTimer() {
+            document.getElementById('timer').textContent = formatTime(gameState.time);
+        }
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function updateNextPlanetPreview() {
+            const canvas = document.getElementById('nextPlanetPreview');
+            const ctx = canvas.getContext('2d');
+            const planet = PLANETS[gameState.nextPlanetType];
+            
+            ctx.clearRect(0, 0, 60, 60);
+            
+            const scale = Math.min(25 / planet.radius, 1);
+            const displayRadius = planet.radius * scale;
+            
+            ctx.shadowColor = planet.glowColor;
+            ctx.shadowBlur = 10;
+            
+            const gradient = ctx.createRadialGradient(
+                25 - displayRadius * 0.3, 25 - displayRadius * 0.3, 0,
+                30, 30, displayRadius
+            );
+            gradient.addColorStop(0, lightenColor(planet.color, 40));
+            gradient.addColorStop(0.5, planet.color);
+            gradient.addColorStop(1, planet.glowColor);
+            
+            ctx.beginPath();
+            ctx.arc(30, 30, displayRadius, 0, Math.PI * 2);
+            ctx.fillStyle = gradient;
+            ctx.fill();
+        }
+
+        // ===== ACHIEVEMENTS =====
+        function checkAchievements() {
+            const stats = {
+                score: gameState.score,
+                time: gameState.time,
+                merges: gameState.merges,
+                maxPlanet: gameState.maxPlanet
+            };
+            
+            ACHIEVEMENTS.forEach(achievement => {
+                if (!unlockedAchievements.includes(achievement.id) && achievement.check(stats)) {
+                    unlockedAchievements.push(achievement.id);
+                    sessionNewAchievements.push(achievement);
+                    storage.set('cosmicMergeAchievements', unlockedAchievements);
+                    scheduleCloudSync();
+                }
+            });
+        }
+
+        function updateAchievementsList() {
+            const list = document.getElementById('achievementsList');
+            list.innerHTML = ACHIEVEMENTS.map(a => {
+                const unlocked = unlockedAchievements.includes(a.id);
+                return `
+                    <div class="achievement-item ${unlocked ? 'unlocked' : ''}">
+                        <div class="achievement-icon">${a.icon}</div>
+                        <div class="achievement-info">
+                            <h5>${a.name}</h5>
+                            <p>${unlocked ? '✓ Получено!' : a.desc}</p>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // ===== PAUSE =====
+        function togglePause() {
+            if (!gameState.isPlaying) return;
+            
+            gameState.isPaused = !gameState.isPaused;
+            document.getElementById('pauseOverlay').style.display = 
+                gameState.isPaused ? 'flex' : 'none';
+            
+            if (gameState.isPaused) {
+                Matter.Runner.stop(runner);
+                syncGameplayTracking(false);
+            } else {
+                Matter.Runner.run(runner, engine);
+                syncGameplayTracking(true);
+            }
+        }
+
+        // ===== MODALS =====
+        function showHelp() {
+            gameState.isPaused = true;
+            Matter.Runner.stop(runner);
+            document.getElementById('helpModal').style.display = 'flex';
+        }
+
+        function closeHelp() {
+            document.getElementById('helpModal').style.display = 'none';
+            if (gameState.isPlaying) {
+                gameState.isPaused = false;
+                Matter.Runner.run(runner, engine);
+                syncGameplayTracking(true);
+            }
+        }
+
+        function showAchievements() {
+            gameState.isPaused = true;
+            Matter.Runner.stop(runner);
+            updateAchievementsList();
+            document.getElementById('achievementsModal').style.display = 'flex';
+        }
+
+        function closeAchievements() {
+            document.getElementById('achievementsModal').style.display = 'none';
+            if (gameState.isPlaying) {
+                gameState.isPaused = false;
+                Matter.Runner.run(runner, engine);
+                syncGameplayTracking(true);
+            }
+        }
+
+        // ===== RESTART / MENU =====
+        function restartGame() {
+            hideAllScreens();
+            
+            // Clear physics
+            if (world) {
+                const bodies = Matter.Composite.allBodies(world);
+                bodies.forEach(body => {
+                    if (body.label && body.label.startsWith('planet_')) {
+                        Matter.Composite.remove(world, body);
+                    }
+                });
+            }
+            
+            // Clear timers
+            clearInterval(gameState.timerInterval);
+            clearTimeout(gameState.autoDropInterval);
+            
+            startGame();
+        }
+
+        function returnToMenu() {
+            hideAllScreens();
+            
+            // Clear physics
+            if (engine) {
+                Matter.Engine.clear(engine);
+            }
+            if (runner) {
+                Matter.Runner.stop(runner);
+            }
+            
+            // Clear timers
+            clearInterval(gameState.timerInterval);
+            clearTimeout(gameState.autoDropInterval);
+            
+            gameState.isPlaying = false;
+            syncGameplayTracking(false);
+            showMainMenu();
+        }
+
+        // ===== INPUT HANDLING =====
+        document.addEventListener('mousemove', (e) => {
+            const canvas = document.getElementById('gameCanvas');
+            if (!canvas) return;
+            const rect = canvas.getBoundingClientRect();
+            gameState.mouseX = e.clientX - rect.left;
+        });
+
+        document.addEventListener('touchmove', (e) => {
+            if (!gameState.isPlaying || gameState.isPaused) return;
+
+            const canvas = document.getElementById('gameCanvas');
+            if (!canvas || !e.touches?.length) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            const insideCanvas = touch.clientY > rect.top && touch.clientY < rect.bottom && touch.clientX > rect.left && touch.clientX < rect.right;
+
+            if (!insideCanvas) return;
+
+            e.preventDefault();
+            gameState.mouseX = touch.clientX - rect.left;
+        }, { passive: false });
+
+        document.addEventListener('click', (e) => {
+            if (!gameState.isPlaying || gameState.isPaused || isInteractiveElement(e.target)) return;
+
+            const canvas = document.getElementById('gameCanvas');
+            if (!canvas) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const insideCanvas = e.clientY > rect.top && e.clientY < rect.bottom && e.clientX > rect.left && e.clientX < rect.right;
+            if (insideCanvas) {
+                dropPlanet();
+            }
+        });
+
+        document.addEventListener('touchend', (e) => {
+            if (!gameState.isPlaying || gameState.isPaused || !gameState.canDrop || isInteractiveElement(e.target)) {
+                return;
+            }
+
+            const canvas = document.getElementById('gameCanvas');
+            if (!canvas) return;
+
+            const touch = e.changedTouches?.[0];
+            if (!touch) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const insideCanvas = touch.clientY > rect.top && touch.clientY < rect.bottom && touch.clientX > rect.left && touch.clientX < rect.right;
+            if (insideCanvas) {
+                dropPlanet();
+            }
+        });
+
+        // Keyboard
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Escape') {
+                if (gameState.isPlaying) {
+                    togglePause();
+                }
+            }
+            if (e.code === 'Space' && gameState.isPlaying && !gameState.isPaused) {
+                e.preventDefault();
+                dropPlanet();
+            }
+        });
+
+        // Auto-pause when tab becomes hidden
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && gameState.isPlaying && !gameState.isPaused) {
+                togglePause();
+            }
+        });
+
+        // Window resize
+        window.addEventListener('resize', () => {
+            createStars();
+        });
+
+        // Prevent text selection/context menu over game area (long tap/right click).
+        document.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+        });
+
+        // Initialize on load
+        window.addEventListener('yandex-sdk-loaded', maybeInitSDK);
+        window.onload = function() {
+            init();
+            maybeInitSDK();
+        };
