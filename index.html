@@ -966,6 +966,8 @@
         // ===== YANDEX GAMES SDK =====
         let ysdk = null;
         let sdkInitStarted = false;
+        let player = null;
+        let cloudSyncTimeout = null;
         const AD_COOLDOWN_MS = 120000;
         let lastAdAt = 0;
 
@@ -990,6 +992,49 @@
             }
         };
 
+        function scheduleCloudSync() {
+            if (!player) return;
+
+            if (cloudSyncTimeout) {
+                clearTimeout(cloudSyncTimeout);
+            }
+
+            cloudSyncTimeout = setTimeout(async () => {
+                try {
+                    await player.setData({
+                        cosmicMergeAchievements: unlockedAchievements,
+                        cosmicMergeBestScore: bestScore
+                    });
+                } catch (error) {
+                    console.warn('Cloud save failed:', error);
+                }
+            }, 1500);
+        }
+
+        async function initPlayerData() {
+            if (!ysdk) return;
+
+            try {
+                player = await ysdk.getPlayer();
+                const cloudData = await player.getData(['cosmicMergeAchievements', 'cosmicMergeBestScore']);
+
+                if (Array.isArray(cloudData.cosmicMergeAchievements)) {
+                    const mergedAchievements = new Set([...unlockedAchievements, ...cloudData.cosmicMergeAchievements]);
+                    unlockedAchievements = Array.from(mergedAchievements);
+                    storage.set('cosmicMergeAchievements', unlockedAchievements);
+                    updateAchievementsList();
+                }
+
+                if (typeof cloudData.cosmicMergeBestScore === 'number') {
+                    bestScore = Math.max(bestScore, cloudData.cosmicMergeBestScore);
+                    storage.set('cosmicMergeBestScore', bestScore);
+                    updateBestScore();
+                }
+            } catch (error) {
+                console.warn('Player init skipped:', error);
+            }
+        }
+
         async function initSDK() {
             if (sdkInitStarted || ysdk) return;
             sdkInitStarted = true;
@@ -998,6 +1043,7 @@
                 if (typeof YaGames !== 'undefined') {
                     ysdk = await YaGames.init();
                     ysdk?.features?.LoadingAPI?.ready?.();
+                    await initPlayerData();
                     console.log('Yandex SDK initialized');
                 } else {
                     console.log('Yandex SDK not found (local testing)');
@@ -1071,6 +1117,7 @@
             timerInterval: null,
             gameOverTimeout: null,
             dangerousBodies: new Map(),
+            activeDropBodyId: null,
             gameplayStarted: false
         };
 
@@ -1292,6 +1339,7 @@
             gameState.currentPlanetType = getRandomStartPlanet();
             gameState.nextPlanetType = getRandomStartPlanet();
             gameState.dangerousBodies.clear();
+            gameState.activeDropBodyId = null;
             sessionNewAchievements = [];
             
             updateScore();
@@ -1365,6 +1413,7 @@
             
             // Draw planets
             drawPlanets(ctx);
+            updateControlledDrop();
             
             // Draw preview
             if (!gameState.isPaused) {
@@ -1547,6 +1596,35 @@
             ctx.shadowBlur = 0;
         }
 
+        function updateControlledDrop() {
+            if (!gameState.activeDropBodyId || gameState.isPaused || !world) return;
+
+            const body = Matter.Composite.allBodies(world).find((b) => b.id === gameState.activeDropBodyId);
+            if (!body || !body.label?.startsWith('planet_')) {
+                gameState.activeDropBodyId = null;
+                return;
+            }
+
+            const planetType = parseInt(body.label.split('_')[1]);
+            const planet = PLANETS[planetType];
+            const canvas = document.getElementById('gameCanvas');
+            if (!canvas) return;
+
+            const minX = wallThickness + planet.radius;
+            const maxX = canvas.width - wallThickness - planet.radius;
+            const targetX = Math.max(minX, Math.min(maxX, gameState.mouseX));
+            const horizontalDelta = targetX - body.position.x;
+
+            Matter.Body.setVelocity(body, {
+                x: horizontalDelta * 0.2,
+                y: body.velocity.y
+            });
+
+            if (Math.abs(horizontalDelta) < 0.6) {
+                Matter.Body.setPosition(body, { x: targetX, y: body.position.y });
+            }
+        }
+
         // ===== PLANET DROPPING =====
         function dropPlanet() {
             if (!gameState.canDrop || gameState.isPaused || !gameState.isPlaying) return;
@@ -1556,7 +1634,8 @@
             const x = Math.max(wallThickness + planet.radius, 
                       Math.min(canvas.width - wallThickness - planet.radius, gameState.mouseX));
             
-            createPlanet(gameState.currentPlanetType, x, 40);
+            const droppedBody = createPlanet(gameState.currentPlanetType, x, 40);
+            gameState.activeDropBodyId = droppedBody.id;
             
             gameState.currentPlanetType = gameState.nextPlanetType;
             gameState.nextPlanetType = getRandomStartPlanet();
@@ -1600,6 +1679,10 @@
                     const typeA = parseInt(bodyA.label.split('_')[1]);
                     const typeB = parseInt(bodyB.label.split('_')[1]);
                     
+                    if (gameState.activeDropBodyId && (bodyA.id === gameState.activeDropBodyId || bodyB.id === gameState.activeDropBodyId)) {
+                        gameState.activeDropBodyId = null;
+                    }
+
                     if (typeA === typeB && typeA < PLANETS.length - 1) {
                         // Merge!
                         const midX = (bodyA.position.x + bodyB.position.x) / 2;
@@ -1758,6 +1841,7 @@
             if (gameState.score > bestScore) {
                 bestScore = gameState.score;
                 storage.set('cosmicMergeBestScore', bestScore);
+                scheduleCloudSync();
             }
             document.getElementById('score').textContent = gameState.score.toLocaleString();
         }
@@ -1820,6 +1904,7 @@
                     unlockedAchievements.push(achievement.id);
                     sessionNewAchievements.push(achievement);
                     storage.set('cosmicMergeAchievements', unlockedAchievements);
+                    scheduleCloudSync();
                 }
             });
         }
