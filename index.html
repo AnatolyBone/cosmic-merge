@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cosmic Merge - Космическое Слияние</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
     <script src="/sdk.js"></script>
@@ -342,6 +342,12 @@
             font-family: 'Orbitron', sans-serif;
             font-size: clamp(1.2rem, 4vw, 1.6rem);
             color: #fbbf24;
+        }
+
+        .best-score {
+            margin-top: 4px;
+            font-size: 0.85rem;
+            color: rgba(255, 255, 255, 0.75);
         }
 
         .right-controls {
@@ -850,6 +856,7 @@
                 <div class="timer-section">
                     <div class="timer-label">Время</div>
                     <div id="timer">00:00</div>
+                    <div class="best-score">Рекорд: <span id="bestScore">0</span></div>
                 </div>
                 <div class="right-controls">
                     <button class="icon-btn" onclick="togglePause()" title="Пауза">⏸</button>
@@ -948,6 +955,29 @@
     <script>
         // ===== YANDEX GAMES SDK =====
         let ysdk = null;
+        const AD_COOLDOWN_MS = 120000;
+        let lastAdAt = 0;
+
+        const storage = {
+            get(key, fallback) {
+                try {
+                    const value = localStorage.getItem(key);
+                    return value ? JSON.parse(value) : fallback;
+                } catch (error) {
+                    console.warn('Storage read failed:', error);
+                    return fallback;
+                }
+            },
+            set(key, value) {
+                try {
+                    localStorage.setItem(key, JSON.stringify(value));
+                    return true;
+                } catch (error) {
+                    console.warn('Storage write failed:', error);
+                    return false;
+                }
+            }
+        };
 
         async function initSDK() {
             try {
@@ -1019,7 +1049,8 @@
             dangerousBodies: new Map()
         };
 
-        let unlockedAchievements = JSON.parse(localStorage.getItem('cosmicMergeAchievements') || '[]');
+        let unlockedAchievements = storage.get('cosmicMergeAchievements', []);
+        let bestScore = storage.get('cosmicMergeBestScore', 0);
         let sessionNewAchievements = [];
 
         const containerWidth = Math.min(400, window.innerWidth - 20);
@@ -1032,6 +1063,7 @@
             createStars();
             populatePlanetList();
             updateAchievementsList();
+            updateBestScore();
         }
 
         function createStars() {
@@ -1193,6 +1225,7 @@
             sessionNewAchievements = [];
             
             updateScore();
+            updateBestScore();
             updateTimer();
             updateNextPlanetPreview();
         }
@@ -1591,12 +1624,17 @@
             // Final achievement check
             checkAchievements();
             
-            // Show ad before game over screen
-            if (ysdk && ysdk.adv) {
+            // Show ad before game over screen, but with cooldown and minimum session time.
+            const now = Date.now();
+            const shouldShowAd = ysdk && ysdk.adv && gameState.time >= 30 && now - lastAdAt >= AD_COOLDOWN_MS;
+
+            if (shouldShowAd) {
                 ysdk.adv.showFullscreenAdv({
                     callbacks: {
                         onClose: function(wasShown) {
-                            console.log('Ad closed, wasShown:', wasShown);
+                            if (wasShown) {
+                                lastAdAt = Date.now();
+                            }
                             showGameOverScreen();
                         },
                         onError: function(error) {
@@ -1606,7 +1644,6 @@
                     }
                 });
             } else {
-                // No SDK available (local testing) - show game over directly
                 showGameOverScreen();
             }
         }
@@ -1637,7 +1674,18 @@
 
         // ===== UI UPDATES =====
         function updateScore() {
+            if (gameState.score > bestScore) {
+                bestScore = gameState.score;
+                storage.set('cosmicMergeBestScore', bestScore);
+            }
             document.getElementById('score').textContent = gameState.score.toLocaleString();
+        }
+
+        function updateBestScore() {
+            const bestScoreEl = document.getElementById('bestScore');
+            if (bestScoreEl) {
+                bestScoreEl.textContent = bestScore.toLocaleString();
+            }
         }
 
         function updateTimer() {
@@ -1690,7 +1738,7 @@
                 if (!unlockedAchievements.includes(achievement.id) && achievement.check(stats)) {
                     unlockedAchievements.push(achievement.id);
                     sessionNewAchievements.push(achievement);
-                    localStorage.setItem('cosmicMergeAchievements', JSON.stringify(unlockedAchievements));
+                    storage.set('cosmicMergeAchievements', unlockedAchievements);
                 }
             });
         }
@@ -1838,6 +1886,13 @@
             if (e.code === 'Space' && gameState.isPlaying && !gameState.isPaused) {
                 e.preventDefault();
                 dropPlanet();
+            }
+        });
+
+        // Auto-pause when tab becomes hidden
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden && gameState.isPlaying && !gameState.isPaused) {
+                togglePause();
             }
         });
 
